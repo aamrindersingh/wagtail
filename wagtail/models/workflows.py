@@ -754,6 +754,15 @@ class Task(SpecificMixin, models.Model):
         """
         return False
 
+    def read_only(self, obj, user):
+        """
+        Returns ``True`` if the object should be read-only for the given user.
+
+        Unlike ``locked_for_user()``, this still allows the user to perform
+        workflow actions (approve/reject) but prevents content modifications.
+        """
+        return False
+
     def user_can_lock(self, obj, user):
         """
         Returns ``True`` if a user who would not normally be able to lock the object should be able to

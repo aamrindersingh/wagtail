@@ -7,6 +7,7 @@ import uuid
 
 from django import forms
 from django.conf import settings
+from django.contrib.auth.models import Group
 from django.contrib.contenttypes.fields import GenericForeignKey, GenericRelation
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
@@ -2465,6 +2466,54 @@ class CustomLockTask(Task):
 
     def locked_for_user(self, obj, user):
         return True
+
+
+class ReadOnlyApprovalTask(Task):
+    """
+    A workflow task where reviewers can approve/reject but cannot edit content.
+    Used for testing read-only workflow functionality.
+    """
+
+    groups = models.ManyToManyField(
+        Group,
+        verbose_name=_("groups"),
+        help_text=_("Users in these groups can approve or reject."),
+    )
+
+    admin_form_fields = Task.admin_form_fields + ["groups"]
+
+    def _user_in_groups(self, user):
+        return self.groups.filter(id__in=user.groups.all()).exists()
+
+    def user_can_access_editor(self, obj, user):
+        return user.is_superuser or self._user_in_groups(user)
+
+    def read_only(self, obj, user):
+        if user.is_superuser:
+            return False
+        return self._user_in_groups(user)
+
+    def locked_for_user(self, obj, user):
+        return not (user.is_superuser or self._user_in_groups(user))
+
+    def get_actions(self, obj, user):
+        if user.is_superuser or self._user_in_groups(user):
+            return [
+                ("reject", _("Request changes"), True),
+                ("approve", _("Approve"), False),
+            ]
+        return []
+
+    def get_task_states_user_can_moderate(self, user, **kwargs):
+        if user.is_superuser or self._user_in_groups(user):
+            return TaskState.objects.filter(
+                status=TaskState.STATUS_IN_PROGRESS, task=self.task_ptr
+            )
+        return TaskState.objects.none()
+
+    class Meta:
+        verbose_name = _("read-only approval task")
+        verbose_name_plural = _("read-only approval tasks")
 
 
 # StreamField media definitions must not be evaluated at startup (e.g. during system checks) -

@@ -322,6 +322,12 @@ class CreateEditViewOptionalFeaturesMixin:
         return self.object.current_workflow_task
 
     @cached_property
+    def read_only_for_user(self):
+        if not self.current_workflow_task:
+            return False
+        return self.current_workflow_task.read_only(self.object, self.request.user)
+
+    @cached_property
     def workflow_tasks(self):
         if not self.workflow_state:
             return []
@@ -617,6 +623,31 @@ class CreateEditViewOptionalFeaturesMixin:
         )
         return None
 
+    def handle_read_only_workflow_action(self):
+        """
+        Handle workflow actions for read-only tasks without saving content.
+
+        The form is validated but content is NOT saved. We only process the
+        workflow action, which operates on the existing task_state.revision.
+        """
+        if self.action != "workflow-action" or not self.workflow_action_is_valid():
+            self.produced_error_message = _(
+                "This item is under review. You can approve or reject "
+                "the changes, but cannot edit the content."
+            )
+            return self.form_invalid(self.form)
+
+        # Perform workflow action without saving content
+        self.workflow_action_action()
+
+        response = self.save_action()
+
+        hook_response = self.run_after_hook()
+        if hook_response is not None:
+            return hook_response
+
+        return response
+
     def run_action_method(self):
         action_method = getattr(self, self.action.replace("-", "_") + "_action", None)
         if action_method:
@@ -625,6 +656,11 @@ class CreateEditViewOptionalFeaturesMixin:
 
     def form_valid(self, form):
         self.form = form
+
+        # For read-only workflow tasks, skip save and only process workflow action
+        if self.read_only_for_user:
+            return self.handle_read_only_workflow_action()
+
         try:
             with transaction.atomic():
                 self.object = self.save_instance()

@@ -47,6 +47,7 @@ from wagtail.test.testapp.models import (
     FullFeaturedSnippet,
     ModeratedModel,
     MultiPreviewModesPage,
+    ReadOnlyApprovalTask,
     SimplePage,
     SimpleTask,
     UserApprovalTask,
@@ -4887,3 +4888,139 @@ class TestCustomWorkflowLockOnTaskWithSnippets(
     BaseSnippetWorkflowTests,
 ):
     pass
+
+
+class TestReadOnlyWorkflowTask(BasePageWorkflowTests):
+    title_field = "title"
+
+    def setup_workflow_and_tasks(self):
+        self.reviewers = Group.objects.create(name="Reviewers")
+        self.workflow = Workflow.objects.create(name="test_workflow")
+        self.task_1 = ReadOnlyApprovalTask.objects.create(name="test_task_1")
+        self.task_1.groups.add(self.reviewers)
+        WorkflowTask.objects.create(
+            workflow=self.workflow, task=self.task_1, sort_order=1
+        )
+        self.moderator.groups.add(self.reviewers)
+
+    def test_read_only_task_allows_approve(self):
+        self.post("submit")
+        self.login(user=self.moderator)
+
+        response = self.post(
+            "workflow-action",
+            {
+                self.title_field: "Changed Value",
+                "workflow-action-name": "approve",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+
+        workflow_state = WorkflowState.objects.for_instance(self.object).get(
+            requested_by=self.submitter
+        )
+        task_state = workflow_state.current_task_state
+        self.assertEqual(task_state.status, TaskState.STATUS_APPROVED)
+
+    def test_read_only_task_prevents_content_save(self):
+        original_value = getattr(self.object, self.title_field)
+        self.post("submit")
+        self.login(user=self.moderator)
+
+        self.post(
+            "workflow-action",
+            {
+                self.title_field: "Changed Value",
+                "workflow-action-name": "approve",
+            },
+        )
+
+        self.object.refresh_from_db()
+        self.assertEqual(getattr(self.object, self.title_field), original_value)
+
+    def test_read_only_task_allows_reject(self):
+        self.post("submit")
+        self.login(user=self.moderator)
+
+        response = self.post(
+            "workflow-action",
+            {
+                self.title_field: "Changed Value",
+                "workflow-action-name": "reject",
+                "workflow-action-extra-data": '{"comment": "Needs work"}',
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+
+        workflow_state = WorkflowState.objects.for_instance(self.object).get(
+            requested_by=self.submitter
+        )
+        task_state = workflow_state.current_task_state
+        self.assertEqual(task_state.status, TaskState.STATUS_REJECTED)
+
+    def test_read_only_task_requires_workflow_action(self):
+        original_value = getattr(self.object, self.title_field)
+        self.post("submit")
+        self.login(user=self.moderator)
+
+        response = self.post(
+            "save",
+            {
+                self.title_field: "Changed Value",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        self.object.refresh_from_db()
+        self.assertEqual(getattr(self.object, self.title_field), original_value)
+
+        task_state = self.object.current_workflow_task_state
+        task_state.refresh_from_db()
+        self.assertEqual(task_state.status, TaskState.STATUS_IN_PROGRESS)
+
+    def test_superuser_can_edit_with_read_only_task(self):
+        self.post("submit")
+        self.login(user=self.superuser)
+
+        self.post(
+            "workflow-action",
+            {
+                self.title_field: "Superuser Changed",
+                "workflow-action-name": "approve",
+            },
+        )
+
+        self.object.refresh_from_db()
+        latest_revision = self.object.get_latest_revision_as_object()
+        self.assertEqual(
+            getattr(latest_revision, self.title_field), "Superuser Changed"
+        )
+
+    def test_non_reviewer_is_locked_out(self):
+        original_value = getattr(self.object, self.title_field)
+        self.post("submit")
+
+        self.post(
+            "workflow-action",
+            {
+                self.title_field: "Hacked",
+                "workflow-action-name": "approve",
+            },
+        )
+
+        self.object.refresh_from_db()
+        self.assertEqual(getattr(self.object, self.title_field), original_value)
+
+        task_state = self.object.current_workflow_task_state
+        task_state.refresh_from_db()
+        self.assertEqual(task_state.status, TaskState.STATUS_IN_PROGRESS)
+
+
+class TestReadOnlyWorkflowTaskWithSnippets(
+    TestReadOnlyWorkflowTask,
+    BaseSnippetWorkflowTests,
+):
+    title_field = "text"

@@ -367,6 +367,11 @@ class EditView(
             self.request.user
         )
 
+        current_task = self.page.current_workflow_task
+        self.read_only_for_user = current_task is not None and current_task.read_only(
+            self.page, self.request.user
+        )
+
         if not self.page_perms.can_edit():
             raise PermissionDenied
 
@@ -546,6 +551,8 @@ class EditView(
             self.form.defer_required_fields()
 
         if self.form.is_valid() and not self.locked_for_user:
+            if self.read_only_for_user:
+                return self.handle_read_only_workflow_action()
             return self.form_valid(self.form)
         else:
             self.form.restore_required_fields()
@@ -888,6 +895,46 @@ class EditView(
             return response
 
         # we're done here - redirect back to the explorer
+        return self.redirect_away()
+
+    def handle_read_only_workflow_action(self):
+        """
+        Handle workflow actions for read-only tasks without saving content.
+
+        The form is validated but content is NOT saved. We only process the
+        workflow action, which operates on the existing task_state.revision.
+        """
+        if not (
+            self.request.POST.get("action-workflow-action")
+            and self.workflow_action_is_valid()
+        ):
+            messages.error(
+                self.request,
+                _(
+                    "This page is under review. You can approve or reject "
+                    "the changes, but cannot edit the content."
+                ),
+            )
+            self.form.restore_required_fields()
+            return self.form_invalid(self.form)
+
+        extra_workflow_data_json = self.request.POST.get(
+            "workflow-action-extra-data", "{}"
+        )
+        extra_workflow_data = json.loads(extra_workflow_data_json)
+        self.page.current_workflow_task.on_action(
+            self.page.current_workflow_task_state,
+            self.request.user,
+            self.workflow_action,
+            **extra_workflow_data,
+        )
+
+        self.add_save_confirmation_message()
+
+        response = self.run_hook("after_edit_page", self.request, self.page)
+        if response:
+            return response
+
         return self.redirect_away()
 
     def cancel_workflow_action(self):
